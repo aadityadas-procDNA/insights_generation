@@ -28,6 +28,7 @@ from config import (
     MODEL_MATRIX, MODEL_OUT, MMM_TRACE, CONTRIBUTIONS,
     read_parquet, write_parquet, PARAMS,
 )
+from databricks.sdk.runtime import *
 
 # ── True channel effects from the generator (for coefficient recovery validation)
 # These are the ground-truth betas used in generate_engagement_gold.py.
@@ -113,7 +114,7 @@ def build_pymc_model(X_train: np.ndarray, y_train: np.ndarray,
     return mmm, channel_idx, comp_idx, ctrl_idx
 
 
-def main() -> None:
+def mmm_fit() -> None:
     print("=" * 60)
     print("  04  MMM FIT")
     print("=" * 60)
@@ -243,4 +244,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    mmm_fit()

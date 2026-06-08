@@ -28,6 +28,7 @@ from config import (
     CP_CANDIDATES, CONTRIBUTIONS, MODEL_OUT,
     read_parquet, read_csv, PARAMS,
 )
+from databricks.sdk.runtime import *
 
 INTEG_OUT = Path(MODEL_OUT) / "integration_report.csv"
 
@@ -75,7 +76,7 @@ def classify_cp(row: dict) -> str:
     return "unclassified"
 
 
-def main() -> None:
+def integration() -> None:
     print("=" * 60)
     print("  05  INTEGRATION")
     print("=" * 60)
@@ -171,4 +172,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    integration()

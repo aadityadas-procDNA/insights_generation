@@ -37,6 +37,7 @@ from config import (
     GOLD_LABELLED, MODEL_OUT, MMM_TRACE, VALIDATION_RPT,
     read_parquet, read_csv, PARAMS,
 )
+from databricks.sdk.runtime import *
 
 LAG_TOLERANCE = pd.Timedelta("42 days")   # ±6 weeks for BOCPD detection lag
 RESIDUAL_ARTIFACT_THRESH = 3.0             # sigma units for V-05
@@ -64,7 +65,7 @@ def run_check(checks: list, name: str, passed: bool, detail: str = "") -> None:
     print(f"  {icon} {name}: {status}  {detail}")
 
 
-def main() -> None:
+def run() -> None:
     print("=" * 60)
     print("  06  VALIDATION")
     print("=" * 60)
@@ -214,4 +215,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run()

@@ -17,6 +17,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+from scipy.special import gammaln
+
+from databricks.sdk.runtime import *
 
 from config import (
     MARKET_SERIES, CP_PROBS, CP_CANDIDATES,
@@ -34,8 +37,8 @@ def _student_t_log_pred(x: float, mu: np.ndarray, kappa: np.ndarray,
     """Log predictive density of x under each run-length hypothesis."""
     nu      = 2 * alpha
     scale2  = beta * (kappa + 1) / (alpha * kappa)
-    log_c   = (np.lgamma((nu + 1) / 2)
-               - np.lgamma(nu / 2)
+    log_c   = (gammaln((nu + 1) / 2)
+               - gammaln(nu / 2)
                - 0.5 * np.log(np.pi * nu * scale2))
     log_lik = log_c - ((nu + 1) / 2) * np.log(1 + (x - mu) ** 2 / (nu * scale2))
     return log_lik
@@ -118,7 +121,7 @@ def extract_candidates(weeks: pd.Series, log_sales: np.ndarray,
     }).sort_values("cp_prob", ascending=False).reset_index(drop=True)
 
 
-def main() -> None:
+def bocpd() -> None:
     print("=" * 60)
     print("  02  BOCPD")
     print("=" * 60)
@@ -186,4 +189,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    bocpd()

@@ -10,6 +10,7 @@ On Databricks: %run ./03_mmm_data_prep
 
 from __future__ import annotations
 
+from databricks.sdk.runtime import *
 import json
 import numpy as np
 import pandas as pd
@@ -150,7 +151,7 @@ def build_model_matrix(mkt: pd.DataFrame) -> tuple[np.ndarray, np.ndarray,
     return X_scaled, y, feature_cols, scaler_params
 
 
-def main() -> None:
+def mmm_data_prep() -> None:
     print("=" * 60)
     print("  03  MMM DATA PREP")
     print("=" * 60)
@@ -202,4 +203,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    mmm_data_prep()

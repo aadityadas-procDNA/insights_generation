@@ -1,0 +1,7 @@
+h5netcdf==1.8.1
+netCDF4==1.7.4
+pymc==6.0.1
+arviz==1.1.0
+arviz-base==1.1.0
+arviz-plots==1.1.0
+arviz-stats==1.1.0
