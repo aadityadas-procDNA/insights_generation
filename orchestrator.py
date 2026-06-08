@@ -76,48 +76,63 @@ else:
 
 # COMMAND ----------
 
+mkt_df = spark.table("nexora_poc_catalog.gold.market_series").toPandas()
+mkt_df
+
+# COMMAND ----------
+
+
 def bocpd() -> None:
     print("=" * 60)
-    print("  02  BOCPD")
+    print("  02  BOCPD  (bayesian_changepoint_detection)")
     print("=" * 60)
 
-    mkt = read_parquet(MARKET_SERIES)
+    mkt   = read_parquet(MARKET_SERIES)
     train = mkt[mkt["split"] == "train"].copy()
 
     log_sales_all   = mkt["log_sales"].values
     log_sales_train = train["log_sales"].values
 
-    # Prior from training data
+    # Prior. NOTE: beta_0 from FIRST-DIFFERENCE variance (week-to-week noise),
+    # not level variance — level variance is trend-inflated and mutes real shifts.
     mu_0    = float(log_sales_train.mean())
     kappa_0 = 1.0
     alpha_0 = 1.0
-    beta_0  = float(log_sales_train.var())
+    diff_var = float(np.diff(log_sales_train).var())
+    beta_0   = diff_var if diff_var > 0 else float(log_sales_train.var())
 
-    print(f"\n  Prior: mu_0={mu_0:.3f}  beta_0={beta_0:.4f}")
+    print(f"\n  Prior: mu_0={mu_0:.3f}  beta_0={beta_0:.5f} (from diff-variance)")
     print(f"  Hazard lambda: {PARAMS['BOCPD_LAMBDA']} weeks  "
           f"(P(CP per week) = {1/PARAMS['BOCPD_LAMBDA']:.3f})")
     print(f"  Running BOCPD on {len(log_sales_all)} weeks ...")
 
-    cp_probs = run_bocpd(
+    out = run_bocpd(
         log_sales_all,
         mu_0=mu_0, kappa_0=kappa_0, alpha_0=alpha_0, beta_0=beta_0,
         hazard_lam=PARAMS["BOCPD_LAMBDA"],
     )
+    cp_prob        = out["cp_prob"]
+    exp_run_length = out["exp_run_length"]
 
     # ── Save full probability series ─────────────────────────────────────────
     prob_df = mkt[["week", "log_sales", "lifecycle_stage", "competitor_spend",
                    "split"]].copy()
-    prob_df["cp_prob"] = cp_probs
+    prob_df["cp_prob"]        = cp_prob
+    prob_df["exp_run_length"] = exp_run_length
     write_parquet(prob_df, CP_PROBS)
     print(f"\n  CP probabilities written -> {CP_PROBS}")
+    print(f"  cp_prob range: [{cp_prob.min():.3f}, {cp_prob.max():.3f}]  "
+          f"(flat near 1/lambda would mean no signal)")
 
     # ── Extract candidates ────────────────────────────────────────────────────
     candidates = extract_candidates(
-        mkt["week"], log_sales_all, cp_probs,
+        mkt["week"], log_sales_all, cp_prob, exp_run_length,
         threshold=PARAMS["BOCPD_THRESHOLD"],
         min_dist=PARAMS["BOCPD_MIN_DIST"],
     )
-    candidates.to_csv(CP_CANDIDATES, index=False)
+    if hasattr(candidates, "to_csv"):
+        from config import write_csv  # UC-aware on Databricks, file locally
+        write_csv(candidates, CP_CANDIDATES)
     print(f"  {len(candidates)} change-point candidates written -> {CP_CANDIDATES}")
 
     if len(candidates):
@@ -133,15 +148,21 @@ def bocpd() -> None:
 
     print("\n  Organic CP validation (+-6 week window):")
     for name, ts in expected.items():
-        window = candidates[
-            (candidates["week"] >= ts - LAG_TOLERANCE) &
-            (candidates["week"] <= ts + LAG_TOLERANCE)
-        ]
-        hit = "DETECTED" if len(window) else "MISSED"
+        if len(candidates):
+            window = candidates[
+                (candidates["week"] >= ts - LAG_TOLERANCE) &
+                (candidates["week"] <= ts + LAG_TOLERANCE)
+            ]
+            hit = "DETECTED" if len(window) else "MISSED"
+        else:
+            hit = "MISSED"
         print(f"    {name} ({ts.date()}) -> {hit}")
 
     print("=" * 60)
 
+# COMMAND ----------
+
+spark.table("nexora_poc_catalog.gold.bocpd_cp_candidates").display()
 
 # COMMAND ----------
 
@@ -355,8 +376,8 @@ def integration() -> None:
     print("=" * 60)
 
     # Load inputs
-    cps    = pd.read_csv(CP_CANDIDATES, parse_dates=["week"])
-    contribs = read_parquet(CONTRIBUTIONS)
+    cps    = spark.table(CP_CANDIDATES).toPandas()
+    contribs = spark.table(CONTRIBUTIONS).toPandas()
     contribs["week"] = pd.to_datetime(contribs["week"])
 
     if len(cps) == 0:
@@ -446,3 +467,7 @@ def integration() -> None:
 # COMMAND ----------
 
 integration()
+
+# COMMAND ----------
+
+

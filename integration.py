@@ -82,8 +82,8 @@ def integration() -> None:
     print("=" * 60)
 
     # Load inputs
-    cps    = pd.read_csv(CP_CANDIDATES, parse_dates=["week"])
-    contribs = read_parquet(CONTRIBUTIONS)
+    cps    = spark.table(CP_CANDIDATES).toPandas()
+    contribs = spark.table(CONTRIBUTIONS).toPandas()
     contribs["week"] = pd.to_datetime(contribs["week"])
 
     if len(cps) == 0:

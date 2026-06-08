@@ -19,6 +19,7 @@ azure-mgmt-web==8.0.0
 azure-storage-blob==12.23.0
 azure-storage-file-datalake==12.17.0
 babel==2.16.0
+bayesian_changepoint_detection==0.2.dev1
 beautifulsoup4==4.12.3
 black==24.10.0
 bleach==6.2.0
