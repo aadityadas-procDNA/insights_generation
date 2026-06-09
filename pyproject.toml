@@ -24,6 +24,12 @@ databricks = [
     "databricks-sdk",
     "pyspark",
 ]
+insights = [
+    "databricks-langchain",
+    "langgraph",
+    "langchain-core",
+    "mlflow",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]
