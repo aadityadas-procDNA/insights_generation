@@ -64,7 +64,7 @@ TRUE_CHANNEL_EFFECTS = {
 def run_check(checks: list, name: str, passed: bool, detail: str = "") -> None:
     status = "PASS" if passed else "FAIL"
     checks.append({"check": name, "status": status, "detail": detail})
-    icon   = "✓" if passed else "✗"
+    icon   = "[SUCCESS]" if passed else "[FAIL]"
     print(f"  {icon} {name}: {status}  {detail}")
 
 
