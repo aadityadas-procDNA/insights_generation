@@ -24,7 +24,7 @@ import bayesian_changepoint_detection.online_changepoint_detection as oncd
 
 from pipeline.config import (
     MARKET_SERIES, CP_PROBS, CP_CANDIDATES,
-    read_parquet, write_parquet, read_csv, PARAMS,
+    read_parquet, write_parquet, write_csv, PARAMS, DATASET,
 )
 
 
@@ -68,26 +68,27 @@ def run_bocpd(log_sales: np.ndarray,
     return {"R": R, "cp_prob": cp_prob, "exp_run_length": exp_run_length}
 
 
-def extract_candidates(weeks: pd.Series, log_sales: np.ndarray,
+def extract_candidates(weeks: pd.Series, series_values: np.ndarray,
                         cp_prob: np.ndarray, exp_run_length: np.ndarray,
-                        threshold: float, min_dist: int) -> pd.DataFrame:
+                        threshold: float, min_dist: int,
+                        series_col: str = "log_target") -> pd.DataFrame:
     """
     Extract change-point candidates.
 
-    Primary signal: peaks in cp_prob = P(run length <= w) above `threshold`, with
-    at least `min_dist` weeks between them. We also attach the expected run length
-    at each peak (a sharp drop corroborates a true change-point).
+    Primary signal: peaks in cp_prob above `threshold` with at least `min_dist`
+    weeks between them.  `series_col` sets the name of the target series column
+    in the output (defaults to the DATASET.target_log_col value passed by bocpd()).
     """
     peaks, _props = find_peaks(cp_prob, height=threshold, distance=min_dist)
     if len(peaks) == 0:
         return pd.DataFrame(
-            columns=["week", "cp_prob", "exp_run_length", "log_sales", "week_idx"])
+            columns=["week", "cp_prob", "exp_run_length", series_col, "week_idx"])
 
     return (pd.DataFrame({
                 "week":           weeks.iloc[peaks].values,
                 "cp_prob":        cp_prob[peaks],
                 "exp_run_length": exp_run_length[peaks],
-                "log_sales":      log_sales[peaks],
+                series_col:       series_values[peaks],
                 "week_idx":       peaks,
             })
             .sort_values("cp_prob", ascending=False)
@@ -102,8 +103,9 @@ def bocpd() -> None:
     mkt   = read_parquet(MARKET_SERIES)
     train = mkt[mkt["split"] == "train"].copy()
 
-    log_sales_all   = mkt["log_sales"].values
-    log_sales_train = train["log_sales"].values
+    log_col = DATASET.target_log_col
+    log_sales_all   = mkt[log_col].values
+    log_sales_train = train[log_col].values
 
     # Prior. NOTE: beta_0 from FIRST-DIFFERENCE variance (week-to-week noise),
     # not level variance — level variance is trend-inflated and mutes real shifts.
@@ -127,8 +129,12 @@ def bocpd() -> None:
     exp_run_length = out["exp_run_length"]
 
     # ── Save full probability series ─────────────────────────────────────────
-    prob_df = mkt[["week", "log_sales", "lifecycle_stage", "competitor_spend",
-                   "split"]].copy()
+    keep_cols = [DATASET.week_col, log_col, "split"]
+    if DATASET.lifecycle_col and DATASET.lifecycle_col in mkt.columns:
+        keep_cols.append(DATASET.lifecycle_col)
+    comp_cols = [c for c in DATASET.competitor_channels if c in mkt.columns]
+    keep_cols += comp_cols
+    prob_df = mkt[keep_cols].copy()
     prob_df["cp_prob"]        = cp_prob
     prob_df["exp_run_length"] = exp_run_length
     write_parquet(prob_df, CP_PROBS)
@@ -141,9 +147,13 @@ def bocpd() -> None:
         mkt["week"], log_sales_all, cp_prob, exp_run_length,
         threshold=PARAMS["BOCPD_THRESHOLD"],
         min_dist=PARAMS["BOCPD_MIN_DIST"],
+        series_col=log_col,
     )
     if hasattr(candidates, "to_csv"):
+<<<<<<< HEAD
         from pipeline.config import write_csv  # UC-aware on Databricks, file locally
+=======
+>>>>>>> 3da315b (transition to parameterized models instead of hard coded data)
         write_csv(candidates, CP_CANDIDATES)
     print(f"  {len(candidates)} change-point candidates written -> {CP_CANDIDATES}")
 
@@ -151,24 +161,20 @@ def bocpd() -> None:
         print(f"\n  Top candidates:")
         print(candidates.head(8).to_string(index=False))
 
-    # ── Quick validation against expected organic CPs ────────────────────────
-    expected = {
-        "OTEZLA maturity / EUCRISA launch": pd.Timestamp("2017-01-02"),
-        "TREMFYA launch":                   pd.Timestamp("2017-07-03"),
-    }
-    LAG_TOLERANCE = pd.Timedelta("42 days")   # 6-week detection lag is acceptable
-
-    print("\n  Organic CP validation (+-6 week window):")
-    for name, ts in expected.items():
-        if len(candidates):
-            window = candidates[
-                (candidates["week"] >= ts - LAG_TOLERANCE) &
-                (candidates["week"] <= ts + LAG_TOLERANCE)
-            ]
-            hit = "DETECTED" if len(window) else "MISSED"
-        else:
-            hit = "MISSED"
-        print(f"    {name} ({ts.date()}) -> {hit}")
+    # ── Quick validation against expected organic CPs (if configured) ────────
+    if DATASET.organic_cp_timestamps:
+        lag = pd.Timedelta(days=PARAMS["LAG_TOLERANCE_DAYS"])
+        print("\n  Organic CP validation (+-6 week window):")
+        for name, ts in DATASET.organic_cp_timestamps.items():
+            if len(candidates):
+                window = candidates[
+                    (candidates["week"] >= ts - lag) &
+                    (candidates["week"] <= ts + lag)
+                ]
+                hit = "DETECTED" if len(window) else "MISSED"
+            else:
+                hit = "MISSED"
+            print(f"    {name} ({ts.date()}) -> {hit}")
 
     print("=" * 60)
 

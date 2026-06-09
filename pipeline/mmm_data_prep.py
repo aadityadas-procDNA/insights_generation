@@ -4,8 +4,8 @@
 Reads:  MARKET_SERIES  (output of 01_data_prep.py)
 Writes: MODEL_MATRIX   (X matrix + y vector, ready for PyMC in 04_mmm_fit.py)
 
-Run locally:  uv run python models/03_mmm_data_prep.py
-On Databricks: %run ./03_mmm_data_prep
+Channel groups, decay rates, and Hill alphas are driven entirely by DATASET
+(DatasetConfig) — no hardcoded column lists in this file.
 """
 
 from __future__ import annotations
@@ -17,37 +17,12 @@ except ImportError:
 import json
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from pipeline.config import (
     MARKET_SERIES, MODEL_MATRIX, MODEL_OUT,
-    read_parquet, write_parquet, PARAMS,
+    read_parquet, write_parquet, PARAMS, DATASET,
 )
-from pathlib import Path
-
-# ── Channel groups ────────────────────────────────────────────────────────────
-# GROUP A: field channels — fast decay (0.15-0.40), mild concave saturation
-GROUP_A = [
-    "f2f", "phone_call", "f2f_short_call", "samples", "speaker",
-    "email_opens", "tp_email_opens",
-    "ehr_impressions", "doximity_opens", "epocrates_opens", "sermo_impressions",
-]
-
-# GROUP B: broadcast/digital — slow decay (0.50-0.80), S-curve saturation
-GROUP_B = [
-    "tv_grps",
-    "standard_display_impressions",
-    "programmatic_display_impressions",
-    "programmatic_video_impressions",
-    "social_impressions",
-    "audio_impressions",
-]
-
-# GROUP C: exogenous controls — no adstock, enter model directly
-GROUP_C = ["competitor_spend"]
-
-# Lifecycle and seasonality covariates (no adstock/saturation)
-COVARIATE_COLS = ["lc_num", "week_idx"]
-FOURIER_COLS   = ["sin_1", "cos_1", "sin_2", "cos_2"]   # adjust if K != 2
 
 
 # ── Transformations ───────────────────────────────────────────────────────────
@@ -56,7 +31,6 @@ def geometric_adstock(x: np.ndarray, decay: float) -> np.ndarray:
     """
     Geometric carry-over adstock.
     adstock[t] = x[t] + decay * adstock[t-1]
-    Models the lagged effect of channel activity on prescribing behaviour.
     """
     out = np.zeros_like(x, dtype=float)
     for t in range(len(x)):
@@ -68,9 +42,8 @@ def hill_saturation(x: np.ndarray, alpha: float, K: float) -> np.ndarray:
     """
     Hill (diminishing returns) saturation.
     sat(x) = x^alpha / (x^alpha + K^alpha)
-    alpha < 1: fully concave (first unit dominates)
-    alpha > 1: S-curve with a lagged inflection point
-    K: half-saturation point (inflection) — set to median of adstocked series.
+    alpha < 1: fully concave;  alpha > 1: S-curve
+    K: half-saturation point (set to median of adstocked series).
     """
     xa = np.power(np.maximum(x, 0), alpha)
     Ka = K ** alpha
@@ -79,68 +52,78 @@ def hill_saturation(x: np.ndarray, alpha: float, K: float) -> np.ndarray:
 
 def transform_channels(mkt: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
-    Apply adstock + saturation to all channel groups.
-    Returns the transformed DataFrame and a metadata dict (for inverse-transform).
+    Apply adstock + Hill saturation to all MMM channels (field + broadcast).
+    Channel groups, decay rates, and Hill alphas come from DATASET.
+    Returns the enriched DataFrame and a metadata dict for back-transforms.
     """
-    decay  = PARAMS["DECAY"]
-    alpha_a = PARAMS["HILL_ALPHA_FIELD"]
-    alpha_b = PARAMS["HILL_ALPHA_BROADCAST"]
-    meta   = {}
+    meta: dict = {}
 
-    for col in GROUP_A:
+    for col in DATASET.field_channels + DATASET.broadcast_channels:
         if col not in mkt.columns:
             continue
-        ads_col = f"{col}_ads"
-        sat_col = f"{col}_sat"
-        d = decay.get(col, 0.3)
-        adstocked = geometric_adstock(mkt[col].values, d)
-        K = float(np.median(adstocked[adstocked > 0])) if (adstocked > 0).any() else 1.0
-        saturated = hill_saturation(adstocked, alpha_a, K)
-        mkt[ads_col] = adstocked
-        mkt[sat_col] = saturated
-        meta[col] = {"type": "A", "decay": d, "hill_alpha": alpha_a, "hill_K": K}
+        decay_val = DATASET.decay.get(col, 0.3)
+        alpha_val = DATASET.hill_alpha(col)
+        group_tag = "A" if col in DATASET.field_channels else "B"
 
-    for col in GROUP_B:
-        if col not in mkt.columns:
-            continue
-        ads_col = f"{col}_ads"
-        sat_col = f"{col}_sat"
-        d = decay.get(col, 0.6)
-        adstocked = geometric_adstock(mkt[col].values, d)
+        adstocked = geometric_adstock(mkt[col].values, decay_val)
         K = float(np.median(adstocked[adstocked > 0])) if (adstocked > 0).any() else 1.0
-        saturated = hill_saturation(adstocked, alpha_b, K)
-        mkt[ads_col] = adstocked
-        mkt[sat_col] = saturated
-        meta[col] = {"type": "B", "decay": d, "hill_alpha": alpha_b, "hill_K": K}
+        saturated = hill_saturation(adstocked, alpha_val, K)
+
+        mkt[f"{col}_ads"] = adstocked
+        mkt[f"{col}_sat"] = saturated
+        meta[col] = {
+            "type":       group_tag,
+            "decay":      decay_val,
+            "hill_alpha": alpha_val,
+            "hill_K":     K,
+        }
 
     return mkt, meta
 
 
 def build_model_matrix(mkt: pd.DataFrame) -> tuple[np.ndarray, np.ndarray,
-                                                    list[str], dict, dict]:
+                                                    list[str], dict]:
     """
-    Build final X (feature matrix) and y (log_sales) for MMM.
-    Returns: X_scaled, y, feature_names, scaler_params, channel_meta
+    Build final X (feature matrix) and y (log target) for MMM.
+
+    Feature columns:
+      - saturated versions of field + broadcast channels
+      - competitor channels (no adstock/saturation)
+      - lifecycle numeric (if available)
+      - week_idx (trend)
+      - Fourier sine/cosine terms
+
+    Returns: X_scaled, y, feature_names, scaler_params
     """
-    # Final feature columns for MMM (saturated versions)
-    feature_cols = (
-        [f"{c}_sat" for c in GROUP_A if f"{c}_sat" in mkt.columns]
-        + [f"{c}_sat" for c in GROUP_B if f"{c}_sat" in mkt.columns]
-        + GROUP_C
-        + COVARIATE_COLS
-        + FOURIER_COLS
-    )
-    # Keep only columns that exist (some channels may be absent for certain products)
-    feature_cols = [c for c in feature_cols if c in mkt.columns]
+    # Saturated channel features
+    sat_cols = [f"{c}_sat" for c in DATASET.mmm_channels if f"{c}_sat" in mkt.columns]
+
+    # Competitor channels (enter model directly, no transform)
+    comp_cols = [c for c in DATASET.competitor_channels if c in mkt.columns]
+
+    # Covariates
+    cov_cols: list[str] = []
+    if DATASET.lifecycle_col and "lc_num" in mkt.columns:
+        cov_cols.append("lc_num")
+    cov_cols.append("week_idx")
+
+    # Fourier terms
+    fourier_cols = [f"{fn}_{k}"
+                    for k in range(1, DATASET.fourier_k + 1)
+                    for fn in ("sin", "cos")
+                    if f"{fn}_{k}" in mkt.columns]
+
+    feature_cols = [c for c in sat_cols + comp_cols + cov_cols + fourier_cols
+                    if c in mkt.columns]
 
     X_raw = mkt[feature_cols].fillna(0).values.astype(float)
-    y     = mkt["log_sales"].values.astype(float)
+    y     = mkt[DATASET.target_log_col].values.astype(float)
 
     # Standardise on TRAINING rows only; apply same scaler to full series
     train_mask = (mkt["split"] == "train").values
     X_mean = X_raw[train_mask].mean(axis=0)
     X_std  = X_raw[train_mask].std(axis=0)
-    X_std  = np.where(X_std == 0, 1.0, X_std)   # avoid divide-by-zero for constant cols
+    X_std  = np.where(X_std == 0, 1.0, X_std)
 
     X_scaled = (X_raw - X_mean) / X_std
 
@@ -161,41 +144,37 @@ def mmm_data_prep() -> None:
 
     mkt = read_parquet(MARKET_SERIES)
 
-    # Adstock + saturation
     mkt, channel_meta = transform_channels(mkt)
     print(f"  Transformed {len(channel_meta)} channels (adstock + Hill saturation)")
 
-    # Model matrix
     X, y, feature_cols, scaler_params = build_model_matrix(mkt)
 
-    print(f"  X shape: {X.shape}  (should be ~257 x 20-28)")
-    print(f"  y range: [{y.min():.3f}, {y.max():.3f}]  (log_sales)")
+    print(f"  X shape: {X.shape}")
+    print(f"  y range: [{y.min():.3f}, {y.max():.3f}]  ({DATASET.target_log_col})")
     print(f"  Features: {feature_cols}")
 
     # Collinearity check
-    corr = np.corrcoef(X.T)
-    n    = len(feature_cols)
-    hi_corr = [
-        (feature_cols[i], feature_cols[j], float(corr[i, j]))
-        for i in range(n) for j in range(i + 1, n)
-        if abs(corr[i, j]) > 0.85
-    ]
-    if hi_corr:
-        print(f"\n  [warn] High collinearity pairs (|r|>0.85) — consider grouping:")
-        for a, b, r in hi_corr[:10]:
-            print(f"    {a} <-> {b}  r={r:.3f}")
-    else:
-        print("  No high collinearity pairs (|r|>0.85).")
+    if X.shape[1] > 1:
+        corr = np.corrcoef(X.T)
+        n    = len(feature_cols)
+        hi_corr = [
+            (feature_cols[i], feature_cols[j], float(corr[i, j]))
+            for i in range(n) for j in range(i + 1, n)
+            if abs(corr[i, j]) > 0.85
+        ]
+        if hi_corr:
+            print(f"\n  [warn] High collinearity pairs (|r|>0.85) — consider grouping:")
+            for a, b, r in hi_corr[:10]:
+                print(f"    {a} <-> {b}  r={r:.3f}")
+        else:
+            print("  No high collinearity pairs (|r|>0.85).")
 
-    # Persist transformed mkt + X/y as parquet
-    # Store X as extra columns so the file is self-contained for 04_mmm_fit
     x_df = pd.DataFrame(X, columns=[f"X_{c}" for c in feature_cols])
-    x_df["y"] = y
-    x_df["week"] = mkt["week"].values
+    x_df["y"]     = y
+    x_df["week"]  = mkt[DATASET.week_col].values
     x_df["split"] = mkt["split"].values
     write_parquet(x_df, MODEL_MATRIX)
 
-    # Save scaler and channel metadata as JSON (needed in 05 and 06 for back-transform)
     meta_path = Path(MODEL_OUT) / "mmm_meta.json"
     with open(meta_path, "w") as f:
         json.dump({"scaler": scaler_params, "channel_meta": channel_meta}, f, indent=2)

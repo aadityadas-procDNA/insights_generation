@@ -147,39 +147,49 @@ def write_csv(df, ref: str, **kwargs):
 
 
 # ── Model hyper-parameters (centralised here so Databricks widgets can override)
+# Dataset-schema parameters (channel names, decay rates, hill alphas, product
+# filter) have moved to DatasetConfig / dataset_config.json.
 PARAMS = {
     # Data prep
-    "FOCUS_PRODUCT": "OTEZLA",
-    "TRAIN_WEEKS": 180,  # weeks 1-180 for training; 181-257 for hold-out
-    "FOURIER_K": 2,  # number of Fourier pairs for seasonality
+    "TRAIN_WEEKS": 180,       # weeks 1-180 training; 181-257 hold-out (also in DatasetConfig)
+    "FOURIER_K": 2,           # Fourier pairs for seasonality  (also in DatasetConfig)
     # BOCPD
-    "BOCPD_LAMBDA": 52,  # expected run-length (weeks)
+    "BOCPD_LAMBDA": 52,       # expected run-length (weeks)
     "BOCPD_THRESHOLD": 0.30,  # CP probability threshold
-    "BOCPD_MIN_DIST": 8,  # minimum weeks between CPs
-    # MMM adstock decay starting values (learned in v2)
-    "DECAY": {
-        "f2f": 0.30,
-        "phone_call": 0.25,
-        "f2f_short_call": 0.25,
-        "samples": 0.30,
-        "speaker": 0.40,
-        "email_opens": 0.20,
-        "tp_email_opens": 0.20,
-        "ehr_impressions": 0.15,
-        "tv_grps": 0.70,
-        "standard_display_impressions": 0.60,
-        "programmatic_display_impressions": 0.55,
-        "programmatic_video_impressions": 0.65,
-        "social_impressions": 0.55,
-        "audio_impressions": 0.45,
-    },
-    # MMM saturation (Hill) K = median of adstocked channel; alpha per group
-    "HILL_ALPHA_FIELD": 0.8,
-    "HILL_ALPHA_BROADCAST": 2.0,
+    "BOCPD_MIN_DIST": 8,      # minimum weeks between CPs
     # MMM NUTS
     "MCMC_DRAWS": 2000,
     "MCMC_TUNE": 1000,
     "MCMC_CHAINS": 4,
     "MCMC_TARGET_ACCEPT": 0.90,
     "MCMC_SEED": 42,
+    # Integration — pre/post window and classification thresholds
+    "PRE_WINDOW": 8,
+    "POST_WINDOW": 8,
+    "RESIDUAL_ZSCORE_THRESH": 2.5,
+    "CONTRIB_SHIFT_THRESH": 0.10,
+    # Validation thresholds
+    "LAG_TOLERANCE_DAYS": 42,
+    "RESIDUAL_ARTIFACT_THRESH": 3.0,
+    "RECOVERY_MEAN_THRESH": 0.25,
+    "RECOVERY_MAX_THRESH": 0.50,
 }
+
+# ── Dataset config (auto-detected on first run, cached in dataset_config.json) ─
+from .dataset_config import DatasetConfig as _DatasetConfig  # noqa: E402
+
+_CONFIG_CACHE = Path(__file__).parent.parent / "dataset_config.json"
+
+
+def _load_dataset() -> _DatasetConfig:
+    if _CONFIG_CACHE.exists():
+        return _DatasetConfig.load(str(_CONFIG_CACHE))
+    print("[config] dataset_config.json not found — "
+          "auto-detecting schema from gold table ...")
+    df = read_parquet(GOLD_LABELLED)
+    cfg = _DatasetConfig.from_dataframe(df)
+    cfg.save(str(_CONFIG_CACHE))
+    return cfg
+
+
+DATASET: _DatasetConfig = _load_dataset()

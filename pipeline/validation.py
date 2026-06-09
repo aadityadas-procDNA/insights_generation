@@ -35,30 +35,17 @@ from pathlib import Path
 from pipeline.config import (
     CP_PROBS, CP_CANDIDATES, CONTRIBUTIONS, ANSWER_KEY,
     GOLD_LABELLED, MODEL_OUT, MMM_TRACE, VALIDATION_RPT,
-    read_parquet, read_csv, PARAMS,
+    read_parquet, read_csv, PARAMS, DATASET,
 )
 try:
     from databricks.sdk.runtime import *  # noqa: F401, F403
 except ImportError:
     pass
 
-LAG_TOLERANCE = pd.Timedelta("42 days")   # ±6 weeks for BOCPD detection lag
-RESIDUAL_ARTIFACT_THRESH = 3.0             # sigma units for V-05
-RECOVERY_MEAN_THRESH     = 0.25           # 25% mean error for V-08
-RECOVERY_MAX_THRESH      = 0.50           # 50% max error for V-08
-
-TRUE_CHANNEL_EFFECTS = {
-    "f2f":              0.80,
-    "phone_call":       0.50,
-    "f2f_short_call":   0.30,
-    "samples":          0.20,
-    "speaker":          2.00,
-    "email_opens":      0.30,
-    "tp_email_opens":   0.15,
-    "ehr_impressions":  0.003,
-    "tv_grps":          0.010,
-    "competitor_spend": -0.000004,
-}
+LAG_TOLERANCE            = pd.Timedelta(days=PARAMS["LAG_TOLERANCE_DAYS"])
+RESIDUAL_ARTIFACT_THRESH = PARAMS["RESIDUAL_ARTIFACT_THRESH"]
+RECOVERY_MEAN_THRESH     = PARAMS["RECOVERY_MEAN_THRESH"]
+RECOVERY_MAX_THRESH      = PARAMS["RECOVERY_MAX_THRESH"]
 
 
 def run_check(checks: list, name: str, passed: bool, detail: str = "") -> None:
@@ -90,23 +77,26 @@ def validation() -> None:
     res_mean = contribs["residual"].mean()
     contribs["residual_z"] = (contribs["residual"] - res_mean) / (res_std + 1e-9)
 
-    # ── V-01: BOCPD detects OTEZLA maturity transition ─────────────────────────
-    ts_maturity = pd.Timestamp("2017-01-02")
-    hit_maturity = cands[
-        (cands["week"] >= ts_maturity - LAG_TOLERANCE) &
-        (cands["week"] <= ts_maturity + LAG_TOLERANCE)
-    ]
-    run_check(checks, "V-01 BOCPD detects OTEZLA maturity", len(hit_maturity) > 0,
-              f"closest CP: {hit_maturity['week'].min().date() if len(hit_maturity) else 'none'}")
-
-    # ── V-02: BOCPD detects TREMFYA launch ────────────────────────────────────
-    ts_tremfya = pd.Timestamp("2017-07-03")
-    hit_tremfya = cands[
-        (cands["week"] >= ts_tremfya - LAG_TOLERANCE) &
-        (cands["week"] <= ts_tremfya + LAG_TOLERANCE)
-    ]
-    run_check(checks, "V-02 BOCPD detects TREMFYA launch", len(hit_tremfya) > 0,
-              f"closest CP: {hit_tremfya['week'].min().date() if len(hit_tremfya) else 'none'}")
+    # ── V-01 / V-02: BOCPD detects organic CPs (if configured in DatasetConfig) ─
+    organic_ts = DATASET.organic_cp_timestamps
+    if organic_ts is None:
+        skip_msg = "organic_cps not set in dataset_config.json"
+        checks.append({"check": "V-01 BOCPD organic CP #1", "status": "SKIP", "detail": skip_msg})
+        checks.append({"check": "V-02 BOCPD organic CP #2", "status": "SKIP", "detail": skip_msg})
+        print(f"  [SKIP] V-01/V-02: {skip_msg}")
+    else:
+        cp_list = list(organic_ts.items())
+        for v_num, (name, ts) in zip(["V-01", "V-02"], cp_list[:2]):
+            hit = cands[
+                (cands["week"] >= ts - LAG_TOLERANCE) &
+                (cands["week"] <= ts + LAG_TOLERANCE)
+            ]
+            run_check(checks, f"{v_num} BOCPD detects {name}", len(hit) > 0,
+                      f"closest CP: {hit['week'].min().date() if len(hit) else 'none'}")
+        # If fewer than 2 organic CPs configured, fill remaining with SKIP
+        if len(cp_list) < 2:
+            checks.append({"check": "V-02 BOCPD organic CP #2", "status": "SKIP",
+                           "detail": "fewer than 2 organic_cps configured"})
 
     # ── V-03: BOCPD silent on INC-001 weeks (artifact — no sales movement) ────
     inc001 = answer_key[answer_key["incident_id"] == "INC-001"].iloc[0]
@@ -147,48 +137,59 @@ def validation() -> None:
                   mean_z < RESIDUAL_ARTIFACT_THRESH,
                   f"|residual_z| mean = {mean_z:.2f} (target < {RESIDUAL_ARTIFACT_THRESH})")
 
-    # ── V-07 + V-08: Coefficient recovery ─────────────────────────────────────
-    try:
-        import arviz as az
-        trace = az.from_netcdf(MMM_TRACE)
+    # ── V-07 + V-08: Coefficient recovery (requires true_effects in DatasetConfig) ─
+    true_effects = DATASET.true_effects
+    if true_effects is None:
+        skip_msg = "true_effects not set in dataset_config.json"
+        checks.append({"check": "V-07 Coefficient ordering",  "status": "SKIP", "detail": skip_msg})
+        checks.append({"check": "V-08 Recovery error < 25%",  "status": "SKIP", "detail": skip_msg})
+        print(f"  [SKIP] V-07/V-08: {skip_msg}")
+    else:
+        try:
+            import arviz as az
+            trace = az.from_netcdf(MMM_TRACE)
 
-        meta_path = Path(MODEL_OUT) / "mmm_meta.json"
-        with open(meta_path) as f:
-            meta = json.load(f)
-        scaler = meta["scaler"]
-        feature_cols = scaler["feature_cols"]
-        X_std  = np.array(scaler["X_std"])
-        y_std  = float(scaler["y_std"])
+            meta_path = Path(MODEL_OUT) / "mmm_meta.json"
+            with open(meta_path) as f:
+                meta = json.load(f)
+            scaler = meta["scaler"]
+            feature_cols = scaler["feature_cols"]
+            X_std  = np.array(scaler["X_std"])
+            y_std  = float(scaler["y_std"])
 
-        beta_ch_post = trace.posterior["beta_ch"].mean(dim=["chain","draw"]).values
+            beta_ch_post = trace.posterior["beta_ch"].mean(dim=["chain", "draw"]).values
 
-        ch_idx     = [i for i, c in enumerate(feature_cols) if "_sat" in c]
-        ch_names   = [feature_cols[i].replace("_sat", "") for i in ch_idx]
+            ch_idx   = [i for i, c in enumerate(feature_cols) if "_sat" in c]
+            ch_names = [feature_cols[i].replace("_sat", "") for i in ch_idx]
 
-        recovery_errors = {}
-        for i, ch in enumerate(ch_names):
-            if ch not in TRUE_CHANNEL_EFFECTS:
-                continue
-            beta_true  = TRUE_CHANNEL_EFFECTS[ch]
-            beta_recov = float(beta_ch_post[i]) * y_std / X_std[ch_idx[i]]
-            err_pct    = abs(beta_recov - beta_true) / (abs(beta_true) + 1e-12)
-            recovery_errors[ch] = err_pct
+            recovery_errors = {}
+            for i, ch in enumerate(ch_names):
+                if ch not in true_effects:
+                    continue
+                beta_true  = true_effects[ch]
+                beta_recov = float(beta_ch_post[i]) * y_std / X_std[ch_idx[i]]
+                err_pct    = abs(beta_recov - beta_true) / (abs(beta_true) + 1e-12)
+                recovery_errors[ch] = err_pct
 
-        if recovery_errors:
-            mean_err = float(np.mean(list(recovery_errors.values())))
-            max_err  = float(np.max(list(recovery_errors.values())))
-            ordering_ok = True   # placeholder — full ordering check skipped for brevity
+            if recovery_errors:
+                mean_err = float(np.mean(list(recovery_errors.values())))
+                max_err  = float(np.max(list(recovery_errors.values())))
+                ordering_ok = True   # placeholder — full ordering check skipped for brevity
 
-            run_check(checks, "V-07 Coefficient ordering",
-                      ordering_ok,
-                      "speaker > f2f > phone_call (see full recovery table)")
-            run_check(checks, "V-08 Mean coefficient recovery < 25%",
-                      mean_err < RECOVERY_MEAN_THRESH,
-                      f"mean error = {mean_err*100:.1f}%  max = {max_err*100:.1f}%")
-    except Exception as e:
-        print(f"  [warn] V-07/V-08 skipped: {e}")
-        checks.append({"check": "V-07 Coefficient ordering",  "status": "SKIP", "detail": str(e)})
-        checks.append({"check": "V-08 Recovery error < 25%",  "status": "SKIP", "detail": str(e)})
+                run_check(checks, "V-07 Coefficient ordering", ordering_ok,
+                          "ordering check (see full recovery table)")
+                run_check(checks, "V-08 Mean coefficient recovery < 25%",
+                          mean_err < RECOVERY_MEAN_THRESH,
+                          f"mean error = {mean_err*100:.1f}%  max = {max_err*100:.1f}%")
+            else:
+                checks.append({"check": "V-07 Coefficient ordering", "status": "SKIP",
+                               "detail": "no channel names matched between model and true_effects"})
+                checks.append({"check": "V-08 Recovery error < 25%", "status": "SKIP",
+                               "detail": "no channel names matched"})
+        except Exception as e:
+            print(f"  [warn] V-07/V-08 skipped: {e}")
+            checks.append({"check": "V-07 Coefficient ordering",  "status": "SKIP", "detail": str(e)})
+            checks.append({"check": "V-08 Recovery error < 25%",  "status": "SKIP", "detail": str(e)})
 
     # ── V-09 / V-10: MAPE ─────────────────────────────────────────────────────
     train_c = contribs[contribs["split"] == "train"]

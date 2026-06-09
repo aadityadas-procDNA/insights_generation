@@ -26,56 +26,38 @@ from pathlib import Path
 
 from pipeline.config import (
     MODEL_MATRIX, MODEL_OUT, MMM_TRACE, CONTRIBUTIONS,
-    read_parquet, write_parquet, PARAMS,
+    read_parquet, write_parquet, PARAMS, DATASET,
 )
 try:
     from databricks.sdk.runtime import *  # noqa: F401, F403
 except ImportError:
     pass
 
-# ── True channel effects from the generator (for coefficient recovery validation)
-# These are the ground-truth betas used in generate_engagement_gold.py.
-# Compare posterior recovered betas against these in 06_validation.py.
-TRUE_CHANNEL_EFFECTS = {
-    "f2f":              0.80,
-    "phone_call":       0.50,
-    "f2f_short_call":   0.30,
-    "samples":          0.20,
-    "speaker":          2.00,
-    "email_opens":      0.30,
-    "tp_email_opens":   0.15,
-    "ehr_impressions":  0.003,
-    "tv_grps":          0.010,
-    "competitor_spend": -0.000004,
-}
-
-
-def _sign_for_channel(col: str) -> str:
-    """Return 'neg' for channels that must have negative coefficients, else 'pos'."""
-    return "neg" if "competitor" in col else "pos"
-
 
 def build_pymc_model(X_train: np.ndarray, y_train: np.ndarray,
-                     feature_cols: list[str], scaler: dict):
+                     feature_cols: list[str], scaler: dict,
+                     alpha_prior_mu: float | None = None):
     """
-    Bayesian linear MMM on log(sales).
+    Bayesian linear MMM on log(target).
 
-    log(sales_t) = alpha + beta_channels @ X_t + beta_ctrl @ ctrl_t + eps_t
-    eps_t ~ Normal(0, sigma^2)
+    log(target_t) = alpha + beta_channels @ X_t + beta_ctrl @ ctrl_t + eps_t
 
-    Sign constraints via HalfNormal:
-      - All field/broadcast channels: HalfNormal (forced positive)
-      - competitor_spend:            -HalfNormal (forced negative)
-      - lifecycle, seasonality, trend: Normal (unconstrained)
+    Sign constraints:
+      - Field/broadcast channels (_sat suffix): HalfNormal (forced positive)
+      - Competitor channels:                    -HalfNormal (forced negative)
+      - Lifecycle, seasonality, trend:           Normal (unconstrained)
 
-    Alpha prior centred at exp(3.3) ~ 27 (OTEZLA maturity baseline sales level).
+    Intercept prior: auto-calibrated to mean(log(target)) on the training set
+    so the model works correctly regardless of the target variable's scale.
     """
     import pymc as pm
 
-    channel_idx   = [i for i, c in enumerate(feature_cols) if "_sat" in c]
-    comp_idx      = [i for i, c in enumerate(feature_cols) if "competitor" in c]
-    ctrl_idx      = [i for i, c in enumerate(feature_cols)
-                     if i not in channel_idx and i not in comp_idx]
+    # Identify feature groups by column name patterns
+    channel_idx = [i for i, c in enumerate(feature_cols) if "_sat" in c]
+    comp_idx    = [i for i, c in enumerate(feature_cols)
+                   if any(ch in c for ch in DATASET.competitor_channels)]
+    ctrl_idx    = [i for i, c in enumerate(feature_cols)
+                   if i not in channel_idx and i not in comp_idx]
 
     n_ch   = len(channel_idx)
     n_comp = len(comp_idx)
@@ -85,9 +67,12 @@ def build_pymc_model(X_train: np.ndarray, y_train: np.ndarray,
     X_comp = X_train[:, comp_idx]
     X_ctrl = X_train[:, ctrl_idx]
 
+    # Intercept prior centred at training-set mean of log(target)
+    mu_prior = alpha_prior_mu if alpha_prior_mu is not None else float(y_train.mean())
+
     with pm.Model() as mmm:
-        # Intercept — prior centred at log(27) ~ 3.3 (OTEZLA maturity mean)
-        alpha = pm.Normal("alpha", mu=3.3, sigma=0.5)
+        # Intercept — auto-calibrated to the dataset's log(target) scale
+        alpha = pm.Normal("alpha", mu=mu_prior, sigma=0.5)
 
         # Channel coefficients — forced positive (HalfNormal)
         beta_ch = pm.HalfNormal("beta_ch", sigma=0.5, shape=n_ch)
@@ -151,8 +136,12 @@ def mmm_fit() -> None:
         print("  [error] PyMC/ArviZ not installed. Run: uv add pymc arviz")
         return
 
+    alpha_prior_mu = float(y_train.mean())
+    print(f"  Intercept prior: Normal(mu={alpha_prior_mu:.3f}, sigma=0.5) "
+          f"[auto-calibrated from training mean of {DATASET.target_log_col}]")
+
     mmm, ch_idx, comp_idx, ctrl_idx = build_pymc_model(
-        X_train, y_train, feature_cols, scaler)
+        X_train, y_train, feature_cols, scaler, alpha_prior_mu=alpha_prior_mu)
 
     print(f"\n  Sampling: {PARAMS['MCMC_CHAINS']} chains x "
           f"{PARAMS['MCMC_DRAWS']} draws (tune={PARAMS['MCMC_TUNE']}) ...")

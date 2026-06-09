@@ -2,23 +2,23 @@
 01_data_prep.py — Load gold layer, aggregate to market level, build feature set.
 
 Reads:  GOLD_LABELLED  (UC table on Databricks; parquet file locally)
-Writes: MARKET_SERIES  (~257 rows x ~30 cols; one row per week, market-level; UC table)
+Writes: MARKET_SERIES  (~N rows x ~M cols; one row per week, market-level; UC table)
+
+Column roles (which columns are the target, channels, etc.) are driven entirely by
+DATASET (DatasetConfig), auto-detected on first run and cached in dataset_config.json.
 
 HYBRID EXECUTION
 ----------------
 The expensive step is the HCP x week -> market aggregation over a potentially huge
 gold table. That step runs in SPARK when a SparkSession is available: filtering and
-the groupby happen in Spark, and ONLY the ~257-row aggregate is pulled into the driver
-via .toPandas(). All downstream feature engineering (Fourier terms, splits, ~257 rows)
-stays in pandas because it is trivially small and Spark would add overhead for no gain.
+the groupby happen in Spark, and ONLY the ~N-row aggregate is pulled into the driver
+via .toPandas(). All downstream feature engineering (~N rows) stays in pandas because
+it is trivially small and Spark would add overhead for no gain.
 
 If Spark is NOT available, it falls back to a pure-pandas path. WARNING: the pandas
 fallback must read the ENTIRE gold table into driver/local memory before filtering and
 aggregating. On a large multi-million-row gold table this can exhaust memory and crash.
 The pandas path is intended for local development on a small/sampled extract only.
-
-Run locally:  uv run python models/01_data_prep.py
-On Databricks: %run ./01_data_prep  (or as a notebook cell)
 """
 
 from __future__ import annotations
@@ -27,50 +27,13 @@ import pandas as pd
 
 from pipeline.config import (
     ON_DATABRICKS, GOLD_LABELLED, MARKET_SERIES,
-    read_parquet, write_parquet, PARAMS,
+    read_parquet, write_parquet, PARAMS, DATASET,
 )
-
-
-FOCUS = PARAMS["FOCUS_PRODUCT"]
-
-# Channels that are market-level constants per week (same for all HCPs) — take MEAN
-BROADCAST_COLS = [
-    "tv_grps",
-    "standard_display_impressions",
-    "programmatic_display_impressions",
-    "programmatic_video_impressions",
-    "social_impressions",
-    "audio_impressions",
-    "competitor_spend",
-]
-
-# Field channels — SUM across HCPs (each HCP's activity is additive)
-FIELD_COLS = [
-    "f2f", "f2f_short_call", "f2f_accompanied", "phone_call", "total_calls",
-    "samples", "speaker",
-    "email_delivered", "email_opens", "email_clicked",
-    "tp_email_delivered", "tp_email_opens", "tp_email_clicked",
-    "doximity_opens", "epocrates_opens", "sermo_impressions",
-    "ehr_impressions",
-]
-
-TARGET_COLS = ["sales", "trx", "nrx"]
-
-# Known organic change-point dates (ground truth for validation — do NOT leak to model)
-ORGANIC_CPS = {
-    "otezla_maturity":  pd.Timestamp("2017-01-02"),
-    "eucrisa_launch":   pd.Timestamp("2017-01-02"),
-    "tremfya_launch":   pd.Timestamp("2017-07-03"),
-}
 
 
 # ── Spark availability guard ──────────────────────────────────────────────────
 def get_spark():
-    """Return an active SparkSession if one exists, else None.
-
-    We do NOT create a new session here — on Databricks one already exists, and we
-    don't want to spin one up locally just to aggregate a small extract.
-    """
+    """Return an active SparkSession if one exists, else None."""
     try:
         from pyspark.sql import SparkSession
         spark = SparkSession.getActiveSession()
@@ -82,11 +45,8 @@ def get_spark():
 # ── Aggregation: Spark path (large table) ─────────────────────────────────────
 def aggregate_to_market_spark(spark, source_ref: str) -> pd.DataFrame:
     """
-    Filter + collapse HCP x product x week -> week x product entirely in Spark, then
-    pull only the small market-level result into pandas.
-
-    Field channels are summed; broadcast channels are averaged (summing would inflate
-    them by ~n_HCPs and destroy the MMM coefficients); lifecycle_stage takes first().
+    Filter + collapse HCP x product x week -> week market-level aggregate in Spark,
+    then pull only the small result into pandas.
     """
     from pyspark.sql import functions as F
 
@@ -95,24 +55,48 @@ def aggregate_to_market_spark(spark, source_ref: str) -> pd.DataFrame:
     sdf = spark.table(source_ref) if ON_DATABRICKS else spark.read.parquet(source_ref)
 
     n_total = sdf.count()
-    n_anom  = sdf.filter(F.col("is_anomaly") == 1).count()
-    print(f"  {n_total:,} rows  |  {n_anom:,} labelled anomaly rows")
 
-    # Keep clean rows only, focus product only — done in Spark before any collect
-    sdf = sdf.filter((F.col("is_anomaly") == 0) & (F.col("product") == FOCUS))
-    n_prod = sdf.count()
-    n_hcp  = sdf.select("hcp_id").distinct().count()
-    print(f"  Using clean {FOCUS} rows: {n_prod:,} rows across {n_hcp:,} HCPs")
+    # Anomaly filter
+    filter_cond = F.lit(True)
+    if DATASET.is_anomaly_col and DATASET.is_anomaly_col in sdf.columns:
+        n_anom = sdf.filter(F.col(DATASET.is_anomaly_col) == 1).count()
+        print(f"  {n_total:,} rows  |  {n_anom:,} labelled anomaly rows")
+        filter_cond = filter_cond & (F.col(DATASET.is_anomaly_col) == 0)
+    else:
+        print(f"  {n_total:,} rows")
+
+    # Product filter
+    if DATASET.product_col and DATASET.product_value:
+        filter_cond = filter_cond & (F.col(DATASET.product_col) == DATASET.product_value)
+
+    sdf = sdf.filter(filter_cond)
+    n_clean = sdf.count()
+    if DATASET.hcp_id_col and DATASET.hcp_id_col in sdf.columns:
+        n_hcp = sdf.select(DATASET.hcp_id_col).distinct().count()
+        label = DATASET.product_value or "all products"
+        print(f"  Using clean {label} rows: {n_clean:,} rows across {n_hcp:,} HCPs")
+
+    # Identify extra target-adjacent columns present in the table
+    sdf_cols = sdf.columns
+    extra_targets = [c for c in ["trx", "nrx"]
+                     if c in sdf_cols and c != DATASET.target_col]
+
+    sum_cols  = [c for c in DATASET.sum_channels + [DATASET.target_col] + extra_targets
+                 if c in sdf_cols]
+    mean_cols = [c for c in DATASET.mean_channels if c in sdf_cols]
 
     agg_exprs = (
-        [F.sum(c).alias(c) for c in FIELD_COLS + TARGET_COLS]
-        + [F.mean(c).alias(c) for c in BROADCAST_COLS]
-        + [F.first("lifecycle_stage").alias("lifecycle_stage")]
+        [F.sum(c).alias(c) for c in sum_cols]
+        + [F.mean(c).alias(c) for c in mean_cols]
     )
-    mkt_sdf = sdf.groupBy("product", "week").agg(*agg_exprs)
+    if DATASET.lifecycle_col and DATASET.lifecycle_col in sdf_cols:
+        agg_exprs.append(F.first(DATASET.lifecycle_col).alias(DATASET.lifecycle_col))
 
-    # Only the ~257-row aggregate crosses into driver memory
-    mkt = mkt_sdf.toPandas()
+    group_cols = [DATASET.week_col]
+    if DATASET.product_col and DATASET.product_col in sdf_cols:
+        group_cols.append(DATASET.product_col)
+
+    mkt = sdf.groupBy(*group_cols).agg(*agg_exprs).toPandas()
     print(f"  [spark] collected {len(mkt):,} market-level rows to pandas")
     return mkt
 
@@ -121,24 +105,43 @@ def aggregate_to_market_spark(spark, source_ref: str) -> pd.DataFrame:
 def aggregate_to_market_pandas(source_ref: str) -> pd.DataFrame:
     """
     Pure-pandas aggregation. WARNING: reads the ENTIRE source into memory first.
-    Safe only for a small/sampled local extract — NOT for a full gold table.
+    Safe only for a small/sampled local extract.
     """
     print("  [pandas] WARNING: loading the full table into memory before aggregating.")
     print("           If the gold table is large this may exhaust memory and crash.")
-    print("           Use the Spark path (run on Databricks / an active SparkSession)")
-    print("           or point GOLD_LABELLED at a sampled extract for local dev.")
 
     df = read_parquet(source_ref)
-    print(f"  {len(df):,} rows  |  {df['is_anomaly'].sum():,} labelled anomaly rows")
+    print(f"  {len(df):,} rows loaded")
 
-    df = df[(df["is_anomaly"] == 0) & (df["product"] == FOCUS)].copy()
-    print(f"  Using clean {FOCUS} rows: {len(df):,} rows across {df['hcp_id'].nunique():,} HCPs")
+    if DATASET.is_anomaly_col and DATASET.is_anomaly_col in df.columns:
+        print(f"  {df[DATASET.is_anomaly_col].sum():,} labelled anomaly rows")
+        df = df[df[DATASET.is_anomaly_col] == 0].copy()
 
-    agg_dict = {c: "sum" for c in FIELD_COLS + TARGET_COLS}
-    agg_dict.update({c: "mean" for c in BROADCAST_COLS})
-    agg_dict["lifecycle_stage"] = "first"
+    if DATASET.product_col and DATASET.product_value and DATASET.product_col in df.columns:
+        df = df[df[DATASET.product_col] == DATASET.product_value].copy()
+        if DATASET.hcp_id_col and DATASET.hcp_id_col in df.columns:
+            label = DATASET.product_value
+            print(f"  Using clean {label} rows: {len(df):,} rows "
+                  f"across {df[DATASET.hcp_id_col].nunique():,} HCPs")
 
-    mkt = df.groupby(["product", "week"]).agg(agg_dict).reset_index()
+    extra_targets = [c for c in ["trx", "nrx"]
+                     if c in df.columns and c != DATASET.target_col]
+
+    agg_dict: dict = {}
+    for c in DATASET.sum_channels + [DATASET.target_col] + extra_targets:
+        if c in df.columns:
+            agg_dict[c] = "sum"
+    for c in DATASET.mean_channels:
+        if c in df.columns:
+            agg_dict[c] = "mean"
+    if DATASET.lifecycle_col and DATASET.lifecycle_col in df.columns:
+        agg_dict[DATASET.lifecycle_col] = "first"
+
+    group_cols = [DATASET.week_col]
+    if DATASET.product_col and DATASET.product_col in df.columns:
+        group_cols.append(DATASET.product_col)
+
+    mkt = df.groupby(group_cols).agg(agg_dict).reset_index()
     return mkt
 
 
@@ -150,30 +153,40 @@ def aggregate_to_market(source_ref: str) -> pd.DataFrame:
     return aggregate_to_market_pandas(source_ref)
 
 
-# ── Feature engineering (pandas; operates on the ~257-row market series) ───────
+# ── Feature engineering ───────────────────────────────────────────────────────
 def add_features(mkt: pd.DataFrame) -> pd.DataFrame:
-    """Add log_sales, event flags, lifecycle numeric, and Fourier seasonality."""
-    mkt = mkt.sort_values("week").reset_index(drop=True)
+    """
+    Add log(target), lifecycle numeric, week index, organic CP flags, Fourier
+    seasonality, and log-transformed broadcast columns.
+    All decisions are driven by DATASET — no hardcoded column names.
+    """
+    mkt = mkt.sort_values(DATASET.week_col).reset_index(drop=True)
 
-    mkt["log_sales"] = np.log(mkt["sales"].clip(lower=1e-6))
+    # Log-transform target
+    mkt[DATASET.target_log_col] = np.log(mkt[DATASET.target_col].clip(lower=1e-6))
 
-    stage_map = {"pre_launch": 0, "launch": 1, "growth": 2, "maturity": 3, "decline": 4}
-    mkt["lc_num"] = mkt["lifecycle_stage"].map(stage_map).fillna(2).astype(int)
+    # Lifecycle numeric (optional — skipped if lifecycle_col not in dataset)
+    if DATASET.lifecycle_col and DATASET.lifecycle_col in mkt.columns:
+        stage_map = {"pre_launch": 0, "launch": 1, "growth": 2, "maturity": 3, "decline": 4}
+        mkt["lc_num"] = mkt[DATASET.lifecycle_col].map(stage_map).fillna(2).astype(int)
 
+    # Week index (always present)
     mkt["week_idx"] = np.arange(len(mkt))
 
-    for name, ts in ORGANIC_CPS.items():
-        mkt[f"flag_{name}"] = (mkt["week"] >= ts).astype(int)
+    # Organic CP step-function flags (optional — skipped if organic_cps not configured)
+    if DATASET.organic_cp_timestamps:
+        for name, ts in DATASET.organic_cp_timestamps.items():
+            mkt[f"flag_{name}"] = (mkt[DATASET.week_col] >= ts).astype(int)
 
-    K = PARAMS["FOURIER_K"]
+    # Fourier seasonality terms
+    K = DATASET.fourier_k
     t = mkt["week_idx"].values
     for k in range(1, K + 1):
-        mkt[f"sin_{k}"] = np.sin(2 * np.pi * k * t / 52)
-        mkt[f"cos_{k}"] = np.cos(2 * np.pi * k * t / 52)
+        mkt[f"sin_{k}"] = np.sin(2 * np.pi * k * t / DATASET.fourier_period)
+        mkt[f"cos_{k}"] = np.cos(2 * np.pi * k * t / DATASET.fourier_period)
 
-    for col in ["standard_display_impressions", "programmatic_display_impressions",
-                "programmatic_video_impressions", "social_impressions",
-                "audio_impressions", "ehr_impressions"]:
+    # Log-transform broadcast channels (large-scale impression counts)
+    for col in DATASET.broadcast_channels:
         if col in mkt.columns:
             mkt[f"{col}_log"] = np.log1p(mkt[col])
 
@@ -181,7 +194,7 @@ def add_features(mkt: pd.DataFrame) -> pd.DataFrame:
 
 
 def split(mkt: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    n_train = PARAMS["TRAIN_WEEKS"]
+    n_train = DATASET.train_weeks
     return mkt.iloc[:n_train].copy(), mkt.iloc[n_train:].copy()
 
 
@@ -192,44 +205,43 @@ def data_prep() -> None:
 
     print(f"\nLoading {GOLD_LABELLED} ...")
 
-    # Market-level aggregation (Spark if available, else pandas + memory warning)
     mkt = aggregate_to_market(GOLD_LABELLED)
     print(f"  After aggregation: {len(mkt):,} market-level rows")
 
-    # Ensure week is a proper datetime (Spark may return it as object/str)
-    mkt["week"] = pd.to_datetime(mkt["week"])
+    mkt[DATASET.week_col] = pd.to_datetime(mkt[DATASET.week_col])
 
-    # Completeness check
-    expected_weeks = 257
-    actual_weeks   = mkt["week"].nunique()
-    if actual_weeks < expected_weeks:
-        print(f"  [warn] {actual_weeks} weeks found; expected {expected_weeks}. "
-              f"Forward-filling gaps ...")
-        full_spine = pd.date_range(mkt["week"].min(), mkt["week"].max(), freq="W-MON")
-        mkt = (mkt.set_index("week")
+    # Completeness check — warn and forward-fill if weeks are missing
+    actual_weeks = mkt[DATASET.week_col].nunique()
+    expected_weeks = DATASET.train_weeks + (len(mkt) - DATASET.train_weeks)
+    if actual_weeks < len(mkt):
+        print(f"  [warn] {actual_weeks} unique weeks in {len(mkt)} rows — "
+              "forward-filling gaps ...")
+        full_spine = pd.date_range(
+            mkt[DATASET.week_col].min(), mkt[DATASET.week_col].max(), freq="W-MON")
+        mkt = (mkt.set_index(DATASET.week_col)
                   .reindex(full_spine)
                   .ffill()
                   .reset_index()
-                  .rename(columns={"index": "week"}))
+                  .rename(columns={"index": DATASET.week_col}))
     else:
-        print(f"  Week spine complete: {actual_weeks} weeks ({mkt['week'].min().date()} -> "
-              f"{mkt['week'].max().date()})")
+        print(f"  Week spine complete: {actual_weeks} weeks "
+              f"({mkt[DATASET.week_col].min().date()} -> "
+              f"{mkt[DATASET.week_col].max().date()})")
 
-    # Feature engineering (pandas — tiny)
     mkt = add_features(mkt)
     train, test = split(mkt)
     mkt["split"] = "train"
-    mkt.loc[mkt.index >= PARAMS["TRAIN_WEEKS"], "split"] = "test"
+    mkt.loc[mkt.index >= DATASET.train_weeks, "split"] = "test"
 
+    log_col = DATASET.target_log_col
     print(f"\n  Train: {len(train)} weeks | Test: {len(test)} weeks")
-    print(f"  log_sales range: [{mkt['log_sales'].min():.2f}, {mkt['log_sales'].max():.2f}]")
+    print(f"  {log_col} range: [{mkt[log_col].min():.2f}, {mkt[log_col].max():.2f}]")
     print(f"  Columns: {list(mkt.columns)}")
 
-    # Write market series (UC table on Databricks via write_parquet -> saveAsTable)
     write_parquet(mkt, MARKET_SERIES)
     print(f"\n  Written -> {MARKET_SERIES}")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-   data_prep()
+    data_prep()

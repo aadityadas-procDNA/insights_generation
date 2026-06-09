@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Auto-generated dataset config (dataset-specific, not source code)
+# Delete this file to force re-detection from the gold table on next run
+dataset_config.json
+
+# Pipeline outputs (large files)
+outputs/
+*.parquet
+*.nc
+*.csv
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
