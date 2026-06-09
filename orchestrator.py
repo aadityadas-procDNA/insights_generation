@@ -11,12 +11,12 @@
 
 # COMMAND ----------
 
-from config import *
-from data_prep import *
-from bocpd import *
-from mmm_data_prep import *
-from mmm_fit import *
-from integration import *
+from pipeline.config import *
+from pipeline.data_prep import *
+from pipeline.bocpd import *
+from pipeline.mmm_data_prep import *
+from pipeline.mmm_fit import *
+from pipeline.integration import *
 
 # COMMAND ----------
 
@@ -131,7 +131,7 @@ def bocpd() -> None:
         min_dist=PARAMS["BOCPD_MIN_DIST"],
     )
     if hasattr(candidates, "to_csv"):
-        from config import write_csv  # UC-aware on Databricks, file locally
+        from pipeline.config import write_csv  # UC-aware on Databricks, file locally
         write_csv(candidates, CP_CANDIDATES)
     print(f"  {len(candidates)} change-point candidates written -> {CP_CANDIDATES}")
 
