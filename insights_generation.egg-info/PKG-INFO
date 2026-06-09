@@ -1,0 +1,20 @@
+Metadata-Version: 2.1
+Name: insights-generation
+Version: 0.1.0
+Summary: insights generation for data warehouse
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scipy
+Requires-Dist: arviz==1.1.0
+Requires-Dist: arviz-base==1.1.0
+Requires-Dist: arviz-plots==1.1.0
+Requires-Dist: arviz-stats==1.1.0
+Requires-Dist: bayesian-changepoint-detection==0.2.dev1
+Requires-Dist: h5netcdf==1.8.1
+Requires-Dist: netcdf4==1.7.4
+Requires-Dist: pymc==6.0.1
+Provides-Extra: databricks
+Requires-Dist: databricks-sdk; extra == "databricks"
+Requires-Dist: pyspark; extra == "databricks"

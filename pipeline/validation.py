@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from .config import (
+from pipeline.config import (
     CP_PROBS, CP_CANDIDATES, CONTRIBUTIONS, ANSWER_KEY,
     GOLD_LABELLED, MODEL_OUT, MMM_TRACE, VALIDATION_RPT,
     read_parquet, read_csv, PARAMS,
@@ -68,7 +68,7 @@ def run_check(checks: list, name: str, passed: bool, detail: str = "") -> None:
     print(f"  {icon} {name}: {status}  {detail}")
 
 
-def run() -> None:
+def validation() -> None:
     print("=" * 60)
     print("  06  VALIDATION")
     print("=" * 60)
@@ -83,7 +83,7 @@ def run() -> None:
     contribs = read_parquet(CONTRIBUTIONS)
     contribs["week"] = pd.to_datetime(contribs["week"])
 
-    answer_key = pd.read_csv(ANSWER_KEY)
+    answer_key = spark.table(ANSWER_KEY)
 
     # Residual z-score for the full series
     res_std  = contribs["residual"].std()
@@ -218,4 +218,4 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    validation()

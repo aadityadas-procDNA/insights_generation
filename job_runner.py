@@ -1,7 +1,4 @@
 # Databricks notebook source
-
-# COMMAND ----------
-
 # Resolve the repo root from this notebook's workspace path and install the package.
 # This works regardless of which user/Repo path the code is cloned to.
 
@@ -34,6 +31,5 @@ def main():
     mmm_data_prep()
     mmm_fit()
     integration()
-    validation()
 
 main()

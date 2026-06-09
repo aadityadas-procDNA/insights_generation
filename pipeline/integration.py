@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from .config import (
+from pipeline.config import (
     CP_CANDIDATES, CONTRIBUTIONS, MODEL_OUT,
     read_parquet, read_csv, PARAMS,
 )

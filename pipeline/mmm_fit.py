@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from .config import (
+from pipeline.config import (
     MODEL_MATRIX, MODEL_OUT, MMM_TRACE, CONTRIBUTIONS,
     read_parquet, write_parquet, PARAMS,
 )
@@ -206,9 +206,14 @@ def mmm_fit() -> None:
     print(f"\n  In-sample MAPE: {mape_train:.1f}%  (target < 10%)")
 
     # ── Save trace ─────────────────────────────────────────────────────────────
-    trace.to_netcdf(MMM_TRACE)
-    print(f"\n  Trace saved -> {MMM_TRACE}")
-
+    try:
+        trace.to_netcdf(MMM_TRACE)
+        print(f"\n  Trace saved -> {MMM_TRACE}")
+    except Exception as e: 
+        print("="*50)
+        print(f"[error] {e}")
+        print("="*50)
+        
     # ── Contribution decomposition ─────────────────────────────────────────────
     # posterior mean of each parameter
     beta_ch_mean   = trace.posterior["beta_ch"].mean(dim=["chain", "draw"]).values

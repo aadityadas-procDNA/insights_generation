@@ -22,7 +22,7 @@ from scipy.signal import find_peaks
 
 import bayesian_changepoint_detection.online_changepoint_detection as oncd
 
-from .config import (
+from pipeline.config import (
     MARKET_SERIES, CP_PROBS, CP_CANDIDATES,
     read_parquet, write_parquet, read_csv, PARAMS,
 )
@@ -143,7 +143,7 @@ def bocpd() -> None:
         min_dist=PARAMS["BOCPD_MIN_DIST"],
     )
     if hasattr(candidates, "to_csv"):
-        from config import write_csv  # UC-aware on Databricks, file locally
+        from pipeline.config import write_csv  # UC-aware on Databricks, file locally
         write_csv(candidates, CP_CANDIDATES)
     print(f"  {len(candidates)} change-point candidates written -> {CP_CANDIDATES}")
 
