@@ -9,6 +9,7 @@ pipeline/__init__.py
 pipeline/bocpd.py
 pipeline/config.py
 pipeline/data_prep.py
+pipeline/dataset_config.py
 pipeline/integration.py
 pipeline/mmm_data_prep.py
 pipeline/mmm_fit.py
