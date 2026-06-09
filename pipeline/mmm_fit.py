@@ -24,11 +24,14 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from config import (
+from .config import (
     MODEL_MATRIX, MODEL_OUT, MMM_TRACE, CONTRIBUTIONS,
     read_parquet, write_parquet, PARAMS,
 )
-from databricks.sdk.runtime import *
+try:
+    from databricks.sdk.runtime import *  # noqa: F401, F403
+except ImportError:
+    pass
 
 # ── True channel effects from the generator (for coefficient recovery validation)
 # These are the ground-truth betas used in generate_engagement_gold.py.

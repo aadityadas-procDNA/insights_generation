@@ -32,12 +32,15 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from config import (
+from .config import (
     CP_PROBS, CP_CANDIDATES, CONTRIBUTIONS, ANSWER_KEY,
     GOLD_LABELLED, MODEL_OUT, MMM_TRACE, VALIDATION_RPT,
     read_parquet, read_csv, PARAMS,
 )
-from databricks.sdk.runtime import *
+try:
+    from databricks.sdk.runtime import *  # noqa: F401, F403
+except ImportError:
+    pass
 
 LAG_TOLERANCE = pd.Timedelta("42 days")   # ±6 weeks for BOCPD detection lag
 RESIDUAL_ARTIFACT_THRESH = 3.0             # sigma units for V-05

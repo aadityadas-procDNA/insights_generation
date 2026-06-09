@@ -22,7 +22,7 @@ from scipy.signal import find_peaks
 
 import bayesian_changepoint_detection.online_changepoint_detection as oncd
 
-from config import (
+from .config import (
     MARKET_SERIES, CP_PROBS, CP_CANDIDATES,
     read_parquet, write_parquet, read_csv, PARAMS,
 )

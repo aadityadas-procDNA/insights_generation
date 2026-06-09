@@ -21,7 +21,10 @@ Databricks usage:
 
 import os
 from pathlib import Path
-from databricks.sdk.runtime import *
+try:
+    from databricks.sdk.runtime import *  # noqa: F401, F403
+except ImportError:
+    pass
 
 # ── Environment detection ─────────────────────────────────────────────────────
 ON_DATABRICKS = bool(os.getenv("DATABRICKS_RUNTIME_VERSION", ""))

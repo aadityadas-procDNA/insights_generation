@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "insights generation for data warehouse"
 readme = "README.md"
 requires-python = ">=3.12"
+
 dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
     "arviz==1.1.0",
     "arviz-base==1.1.0",
     "arviz-plots==1.1.0",
@@ -14,3 +18,17 @@ dependencies = [
     "netcdf4==1.7.4",
     "pymc==6.0.1",
 ]
+
+[project.optional-dependencies]
+databricks = [
+    "databricks-sdk",
+    "pyspark",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipeline*"]

@@ -10,12 +10,15 @@ On Databricks: %run ./03_mmm_data_prep
 
 from __future__ import annotations
 
-from databricks.sdk.runtime import *
+try:
+    from databricks.sdk.runtime import *  # noqa: F401, F403
+except ImportError:
+    pass
 import json
 import numpy as np
 import pandas as pd
 
-from config import (
+from .config import (
     MARKET_SERIES, MODEL_MATRIX, MODEL_OUT,
     read_parquet, write_parquet, PARAMS,
 )

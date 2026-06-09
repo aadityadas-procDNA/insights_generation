@@ -24,11 +24,14 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from config import (
+from .config import (
     CP_CANDIDATES, CONTRIBUTIONS, MODEL_OUT,
     read_parquet, read_csv, PARAMS,
 )
-from databricks.sdk.runtime import *
+try:
+    from databricks.sdk.runtime import *  # noqa: F401, F403
+except ImportError:
+    pass
 
 INTEG_OUT = Path(MODEL_OUT) / "integration_report.csv"
 
