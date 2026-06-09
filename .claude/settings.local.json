@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(python -m pip install matplotlib --quiet)",
+      "Bash(python)",
+      "Bash(python make_diagram.py)",
+      "WebFetch(domain:docs.databricks.com)"
+    ]
+  }
+}
