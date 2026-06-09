@@ -150,11 +150,12 @@ def bocpd() -> None:
         series_col=log_col,
     )
     if hasattr(candidates, "to_csv"):
-<<<<<<< HEAD
-        from pipeline.config import write_csv  # UC-aware on Databricks, file locally
-=======
->>>>>>> 3da315b (transition to parameterized models instead of hard coded data)
         write_csv(candidates, CP_CANDIDATES)
+# 
+#    from pipeline.config import write_csv  # UC-aware on Databricks, file locally
+# 
+#   (transition to parameterized models instead of hard coded data)
+
     print(f"  {len(candidates)} change-point candidates written -> {CP_CANDIDATES}")
 
     if len(candidates):

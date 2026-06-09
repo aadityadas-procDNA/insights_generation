@@ -102,7 +102,7 @@ def read_parquet(ref: str, **kwargs):
     import pandas as pd
 
     if ON_DATABRICKS:
-        return spark.table(ref).toPandas()  # noqa: F821
+        return spark.table(ref, **kwargs).toPandas()  # noqa: F821
     return pd.read_parquet(ref, **kwargs)
 
 
@@ -186,7 +186,11 @@ def _load_dataset() -> _DatasetConfig:
         return _DatasetConfig.load(str(_CONFIG_CACHE))
     print("[config] dataset_config.json not found — "
           "auto-detecting schema from gold table ...")
-    df = read_parquet(GOLD_LABELLED)
+    if ON_DATABRICKS:
+        df = spark.table(GOLD_LABELLED).sample(withReplacement = False, fraction=0.10, seed = 42).toPandas()
+    else: 
+        df = pd.read_parquet(GOLD_LABELLED)
+        
     cfg = _DatasetConfig.from_dataframe(df)
     cfg.save(str(_CONFIG_CACHE))
     return cfg
