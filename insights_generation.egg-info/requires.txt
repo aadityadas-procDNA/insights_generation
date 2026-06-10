@@ -13,3 +13,9 @@ pymc==6.0.1
 [databricks]
 databricks-sdk
 pyspark
+
+[insights]
+databricks-langchain
+langgraph
+langchain-core
+mlflow

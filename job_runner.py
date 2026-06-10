@@ -9,7 +9,7 @@ _nb_path = _ctx.notebookPath().get()               # e.g. /Repos/user@co.com/ins
 _repo_root = "/Workspace" + "/".join(_nb_path.split("/")[:-1])
 
 print(f"Installing package from: {_repo_root}")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", _repo_root])
+subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", f"{_repo_root}[insights]"])
 
 # COMMAND ----------
 
@@ -24,6 +24,7 @@ from pipeline.mmm_data_prep import *
 from pipeline.mmm_fit import *
 from pipeline.integration import *
 from pipeline.validation import *
+from pipeline.insights import *
 
 def main():
     data_prep()
@@ -31,5 +32,10 @@ def main():
     mmm_data_prep()
     mmm_fit()
     integration()
+    generate_insights()
 
 main()
+
+# COMMAND ----------
+
+

@@ -17,6 +17,7 @@ from pipeline.bocpd import *
 from pipeline.mmm_data_prep import *
 from pipeline.mmm_fit import *
 from pipeline.integration import *
+from pipeline.
 
 # COMMAND ----------
 
@@ -470,4 +471,43 @@ integration()
 
 # COMMAND ----------
 
+def generate_insights(extra_context: str | None = None) -> dict[str, Any]:
+    """Run the insights agent end-to-end and write insights_report.json.
 
+    Args:
+        extra_context: Optional free-text analyst context appended to the default
+                       prompt (e.g. "Focus on the Q3 2023 launch window.").
+
+    Returns:
+        Parsed insights dict with keys: executive_summary, changepoints,
+        top_channel_drivers, model_quality, recommendations.
+    """
+    print("=" * 60)
+    print("  07  INSIGHTS GENERATION")
+    print("=" * 60)
+
+    agent = build_insights_agent()
+    prompt = _build_user_prompt(extra_context)
+    endpoint = os.getenv("INSIGHTS_MODEL_ENDPOINT", "databricks-claude-sonnet-4-5")
+
+    print(f"  Model endpoint: {endpoint}")
+    print("  Invoking agent ...\n")
+
+    result  = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+    raw     = _extract_agent_text(result)
+    insights = _parse_insights_json(raw)
+
+    _INSIGHTS_OUT.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(_INSIGHTS_OUT), "w", encoding="utf-8") as f:
+        json.dump(insights, f, indent=2, default=str)
+
+    print(f"  Insights report written -> {_INSIGHTS_OUT}")
+    if "executive_summary" in insights:
+        print(f"\n  Summary: {insights['executive_summary']}")
+    if insights.get("changepoints"):
+        print(f"  Changepoints analysed: {len(insights['changepoints'])}")
+    mq = insights.get("model_quality", {})
+    print(f"  Model quality: {mq.get('overall', 'UNKNOWN')}")
+    print("=" * 60)
+
+    return insights

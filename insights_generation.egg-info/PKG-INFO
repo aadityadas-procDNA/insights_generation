@@ -18,3 +18,8 @@ Requires-Dist: pymc==6.0.1
 Provides-Extra: databricks
 Requires-Dist: databricks-sdk; extra == "databricks"
 Requires-Dist: pyspark; extra == "databricks"
+Provides-Extra: insights
+Requires-Dist: databricks-langchain; extra == "insights"
+Requires-Dist: langgraph; extra == "insights"
+Requires-Dist: langchain-core; extra == "insights"
+Requires-Dist: mlflow; extra == "insights"
